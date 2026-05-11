@@ -7,8 +7,6 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "@azure/msal-node": "^5.2.1",
-    "discord.js": "^14.15.0",
     "dotenv": "^16.4.3",
     "mineflayer": "^4.0.0"
   },

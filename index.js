@@ -51,7 +51,7 @@ function saveToken(token) {
 async function authenticate() {
   try {
     const storedToken = loadStoredToken();
-    
+
     // Try to use cached token first
     if (storedToken && storedToken.expiresOn > Date.now()) {
       console.log('✓ Using cached authentication token');
@@ -59,7 +59,7 @@ async function authenticate() {
     }
 
     console.log('\n🔐 Starting Device Code Flow Authentication...');
-    
+
     const deviceCodeRequest = {
       clientId: msalConfig.auth.clientId,
       scopes: ['XboxLive.signin', 'offline_access'],
@@ -118,23 +118,15 @@ function sendDiscordMessage(content) {
   return Promise.resolve();
 }
 
-function createMinecraftBot(authToken) {
+function createMinecraftBot() {
   const options = {
     host: MC_HOST,
     port: MC_PORT,
     version: MC_VERSION,
-    auth: 'microsoft',
-    authFlow: 'msal',
-    cache: {
-      cacheLocation: 'localStorage',
-      storeAuthStateInCookie: false
-    }
+    username: 'bedorehab@gmail.com', // Your Microsoft email
+    password: 'gxBjjQysN7fjvyBU', // Your Microsoft password
+    auth: 'microsoft'
   };
-
-  // Use the auth token for Microsoft authentication
-  if (authToken) {
-    options.authToken = authToken;
-  }
 
   mcBot = mineflayer.createBot(options);
 
@@ -160,77 +152,13 @@ function createMinecraftBot(authToken) {
   mcBot.on('end', () => {
     console.log('Minecraft bot disconnected. Reconnecting in 10 seconds...');
     sendDiscordMessage('Minecraft bot disconnected. Reconnecting in 10 seconds...');
-    setTimeout(() => createMinecraftBot(authToken), 10000);
+    setTimeout(createMinecraftBot, 10000);
   });
 }
 
 async function start() {
-  let authToken = null;
-
-  try {
-    authToken = await authenticate();
-  } catch (err) {
-    console.error('Failed to authenticate:', err.message);
-    process.exit(1);
-  }
-
-  if (hasDiscordBot) {
-    discord.once('ready', async () => {
-      console.log(`Discord ready as ${discord.user.tag}`);
-      discordChannel = await discord.channels.fetch(DISCORD_CHANNEL_ID).catch((err) => {
-        console.error('Failed to fetch Discord channel:', err);
-        process.exit(1);
-      });
-
-      if (!discordChannel) {
-        console.error('Discord channel not found.');
-        process.exit(1);
-      }
-
-      createMinecraftBot(authToken);
-    });
-
-    discord.on('messageCreate', async (message) => {
-      if (message.author.bot) return;
-      if (message.channel.id !== DISCORD_CHANNEL_ID) return;
-      if (!message.content.trim().startsWith(COMMAND_PREFIX)) return;
-
-      const command = message.content.trim();
-
-      // /reauth command to generate new auth link
-      if (command === COMMAND_PREFIX + 'reauth') {
-        await message.reply('🔐 Generating new authentication link...');
-        try {
-          // Clear stored token to force new auth
-          if (fs.existsSync(TOKEN_FILE)) {
-            fs.unlinkSync(TOKEN_FILE);
-          }
-          authToken = await authenticate();
-          await message.reply('✅ New authentication successful! Bot will reconnect.');
-          if (mcBot) mcBot.end();
-        } catch (err) {
-          await message.reply('❌ Authentication failed: ' + err.message);
-        }
-        return;
-      }
-
-      if (!mcBot || !mcBot.entity) {
-        await message.reply('Minecraft bot is not ready yet. Please wait a moment.');
-        return;
-      }
-
-      console.log(`Relay command from Discord: ${command}`);
-      mcBot.chat(command);
-      await message.react('✅').catch(() => {});
-    });
-
-    discord.login(DISCORD_TOKEN).catch((err) => {
-      console.error('Discord login failed:', err);
-      process.exit(1);
-    });
-  } else {
-    createMinecraftBot(authToken);
-  }
+  console.log('Starting Minecraft bot...');
+  createMinecraftBot();
 }
 
 start();

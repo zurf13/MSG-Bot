@@ -1,18 +1,19 @@
 // index.js — Minecraft <-> Discord bridge bot
 // Features: chat relay, tpa/tpahere/tpaccept/tell/rtp/afk commands,
 // settings GUI auto-toggle (state-aware), AFK teleport -> /spawn 1,
-// connect/disconnect/reauth, chat signing disabled, version pinned.
+// connect/disconnect/reauth, chat signing disabled, version pinned,
+// player presence tracking (event-driven, full shard range).
 
 const mineflayer = require('mineflayer');
 const { Client, GatewayIntentBits, Partials } = require('discord.js');
 
 // ---------- CONFIG ----------
 const DISCORD_TOKEN   = process.env.DISCORD_TOKEN;
-const DISCORD_CHANNEL = process.env.DISCORD_CHANNEL;       // channel ID for relay
+const DISCORD_CHANNEL = process.env.DISCORD_CHANNEL;
 const MC_HOST         = process.env.MC_HOST   || 'donutsmp.net';
 const MC_PORT         = parseInt(process.env.MC_PORT || '25565', 10);
-const MC_USERNAME     = process.env.MC_USERNAME;            // Microsoft email
-const MC_VERSION      = process.env.MC_VERSION || '1.20.4'; // pinned for stability
+const MC_USERNAME     = process.env.MC_USERNAME;
+const MC_VERSION      = process.env.MC_VERSION || '1.20.4';
 const PREFIX          = '!';
 
 // ---------- DISCORD ----------
@@ -41,6 +42,7 @@ function sendDiscordMessage(content) {
 let bot = null;
 let settingsConfigured = false;
 let manualDisconnect = false;
+let presenceReady = false;
 
 function getItemText(item) {
   if (!item) return '';
@@ -55,7 +57,7 @@ function getItemText(item) {
 
 function isEnabled(item) {
   const t = getItemText(item);
-  if (/currently:?\s*(enabled|on|true)/i.test(t))  return true;
+  if (/currently:?\s*(enabled|on|true)/i.test(t))    return true;
   if (/currently:?\s*(disabled|off|false)/i.test(t)) return false;
   if (item && item.enchants && item.enchants.length > 0) return true;
   return null;
@@ -69,6 +71,7 @@ function createMinecraftBot() {
 
   manualDisconnect = false;
   settingsConfigured = false;
+  presenceReady = false;
 
   console.log(`[mc] connecting to ${MC_HOST}:${MC_PORT} as ${MC_USERNAME} (v${MC_VERSION})`);
 
@@ -86,6 +89,14 @@ function createMinecraftBot() {
     console.log('[mc] spawned as ' + bot.username);
     sendDiscordMessage('✅ Minecraft bot connected as **' + bot.username + '**.');
     settingsConfigured = false;
+
+    // Mark presence ready ~3s after spawn so the initial tab-list flood
+    // doesn't post a "joined" line for every existing player.
+    setTimeout(() => {
+      presenceReady = true;
+      const count = Object.keys(bot.players || {}).filter((n) => n !== bot.username).length;
+      sendDiscordMessage(`👥 Tracking **${count}** players online.`);
+    }, 3000);
 
     // Open settings ~5s after spawn (only if not already configured)
     setTimeout(() => {
@@ -134,13 +145,12 @@ function createMinecraftBot() {
     }
   });
 
-  // ---- Single message handler: relay + AFK teleport detection ----
+  // ---- Chat relay + AFK teleport detection ----
   bot.on('message', (jsonMsg) => {
     let text = '';
     try { text = jsonMsg.toString(); } catch (e) { return; }
     if (!text || !text.trim()) return;
 
-    // AFK teleport -> /spawn 1
     if (/you teleported to afk\s*#?\d+/i.test(text)) {
       sendDiscordMessage('🚨 Teleport detected!');
       setTimeout(() => {
@@ -149,6 +159,19 @@ function createMinecraftBot() {
     }
 
     sendDiscordMessage(text.slice(0, 1900));
+  });
+
+  // ---- Player presence (event-driven) ----
+  bot.on('playerJoined', (player) => {
+    if (!presenceReady) return;
+    if (!player || !player.username || player.username === bot.username) return;
+    sendDiscordMessage(`🟢 Joined: **${player.username}**`);
+  });
+
+  bot.on('playerLeft', (player) => {
+    if (!presenceReady) return;
+    if (!player || !player.username || player.username === bot.username) return;
+    sendDiscordMessage(`🔴 Left: **${player.username}**`);
   });
 
   bot.on('kicked', (reason) => {
@@ -164,6 +187,7 @@ function createMinecraftBot() {
   bot.on('end', (reason) => {
     console.log('[mc] disconnected:', reason);
     sendDiscordMessage('🔌 Bot disconnected (' + reason + ').');
+    presenceReady = false;
     if (!manualDisconnect) {
       console.log('[mc] auto-reconnecting in 15s...');
       setTimeout(createMinecraftBot, 15_000);
@@ -262,6 +286,23 @@ discord.on('messageCreate', async (msg) => {
       break;
     }
 
+    case 'nearby':
+    case 'online': {
+      if (!bot || !bot.players) return msg.reply('Bot not connected.');
+      const list = Object.keys(bot.players).filter((n) => n !== bot.username).sort();
+      if (!list.length) return msg.reply('No other players online.');
+      const chunks = [];
+      let buf = `**Online (${list.length}):**\n`;
+      for (const n of list) {
+        const line = `• ${n}\n`;
+        if (buf.length + line.length > 1900) { chunks.push(buf); buf = ''; }
+        buf += line;
+      }
+      if (buf) chunks.push(buf);
+      for (const c of chunks) await msg.reply(c);
+      break;
+    }
+
     case 'status':
       if (!bot || !bot.player) return msg.reply('Not connected.');
       msg.reply(`Connected as **${bot.username}** | Health: ${bot.health?.toFixed(1)} | Food: ${bot.food} | Pos: ${bot.entity?.position?.floored?.()}`);
@@ -271,8 +312,8 @@ discord.on('messageCreate', async (msg) => {
       msg.reply([
         '**Commands:**',
         '`!connect` / `!disconnect` / `!reauth`',
-        '`!status`',
-        '`!say <text>` — public chat (will be blocked if chat off)',
+        '`!status` / `!online`',
+        '`!say <text>` — public chat (blocked if chat off)',
         '`!tell <player> <msg>` — private DM',
         '`!tpa <player>` / `!tpahere <player>` / `!tpaccept` / `!tpdeny`',
         '`!rtp` / `!spawn [n]` / `!afk`',

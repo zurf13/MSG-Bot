@@ -114,7 +114,7 @@ function createMinecraftBot() {
     if (shouldReconnect) {
       console.log('Disconnected. Reconnecting in 10s...');
       sendDiscordMessage('🔄 Disconnected. Reconnecting in 10s...');
-      setTimeout(createMinecraftBot, 10000);
+      setTimeout(createMinecraftBot, 30000);
     } else {
       sendDiscordMessage('🛑 Disconnected.');
     }

@@ -1,83 +1,87 @@
-// index.js — Minecraft <-> Discord bridge bot
-// Features: chat relay, tpa/tpahere/tpaccept/tell/rtp/afk commands,
-// settings GUI auto-toggle (state-aware), AFK teleport -> /spawn 1,
-// connect/disconnect/reauth, chat signing disabled, version pinned,
-// player presence tracking (event-driven, full shard range).
+// index.js — Minecraft <-> Discord bridge for DonutSMP
+import 'dotenv/config';
+import mineflayer from 'mineflayer';
+import { Client, GatewayIntentBits, Partials } from 'discord.js';
 
-const mineflayer = require('mineflayer');
-const { Client, GatewayIntentBits, Partials } = require('discord.js');
+// ---------- Env ----------
+const {
+  DISCORD_TOKEN,
+  DISCORD_CHANNEL,
+  MC_HOST = 'donutsmp.net',
+  MC_PORT = '25565',
+  MC_USERNAME,
+  MC_VERSION = '1.21.4',
+} = process.env;
 
-// ---------- CONFIG ----------
-const DISCORD_TOKEN   = process.env.DISCORD_TOKEN;
-const DISCORD_CHANNEL = process.env.DISCORD_CHANNEL;
-const MC_HOST         = process.env.MC_HOST   || 'donutsmp.net';
-const MC_PORT         = parseInt(process.env.MC_PORT || '25565', 10);
-const MC_USERNAME     = process.env.MC_USERNAME;
-const MC_VERSION      = process.env.MC_VERSION || '1.20.4';
-const PREFIX          = '!';
+if (!DISCORD_TOKEN) throw new Error('Missing DISCORD_TOKEN');
+if (!DISCORD_CHANNEL) throw new Error('Missing DISCORD_CHANNEL');
+if (!MC_USERNAME) throw new Error('Missing MC_USERNAME');
 
-// ---------- DISCORD ----------
+// ---------- State ----------
+let bot = null;
+let discordChannel = null;
+let reconnectDelay = 5000; // ms, doubles on each fail, caps at 5min
+let shuttingDown = false;
+
+// ---------- Discord ----------
 const discord = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.DirectMessages,
   ],
   partials: [Partials.Channel],
 });
 
-let discordChannel = null;
+discord.once('clientReady', async () => {
+  console.log(`[discord] logged in as ${discord.user.tag}`);
+  try {
+    discordChannel = await discord.channels.fetch(DISCORD_CHANNEL);
+    if (!discordChannel) {
+      console.log('[discord] channel fetch returned null — check DISCORD_CHANNEL id');
+    } else {
+      console.log(`[discord] bound to channel #${discordChannel.name}`);
+    }
+  } catch (err) {
+    console.log('[discord] failed to fetch channel:', err.message);
+  }
+
+  // Start MC bot only after Discord is ready
+  createMinecraftBot();
+});
+
+discord.on('messageCreate', (msg) => {
+  if (msg.author.bot) return;
+  if (msg.channelId !== DISCORD_CHANNEL) return;
+  if (!bot || !bot.player) return;
+
+  const text = `[Discord] ${msg.author.username}: ${msg.content}`.slice(0, 256);
+  try {
+    bot.chat(text);
+  } catch (err) {
+    console.log('[mc] chat send failed:', err.message);
+  }
+});
 
 function sendDiscordMessage(content) {
-  if (!discordChannel) return;
-  try {
-    discordChannel.send(content.length > 1900 ? content.slice(0, 1900) + '…' : content);
-  } catch (e) {
-    console.error('Discord send failed:', e.message);
+  if (!discordChannel) {
+    console.log('[discord] no channel bound, skipping:', content?.slice(0, 80));
+    return;
   }
+  discordChannel
+    .send(content)
+    .catch((err) => console.log('[discord] send failed:', err.message));
 }
 
-// ---------- MINECRAFT ----------
-let bot = null;
-let settingsConfigured = false;
-let manualDisconnect = false;
-let presenceReady = false;
-
-function getItemText(item) {
-  if (!item) return '';
-  let text = '';
-  try {
-    if (item.customName)  text += item.customName + ' ';
-    if (item.displayName) text += item.displayName + ' ';
-    if (item.nbt)         text += JSON.stringify(item.nbt) + ' ';
-  } catch (e) {}
-  return text.toLowerCase();
-}
-
-function isEnabled(item) {
-  const t = getItemText(item);
-  if (/currently:?\s*(enabled|on|true)/i.test(t))    return true;
-  if (/currently:?\s*(disabled|off|false)/i.test(t)) return false;
-  if (item && item.enchants && item.enchants.length > 0) return true;
-  return null;
-}
-
+// ---------- Minecraft ----------
 function createMinecraftBot() {
-  if (bot) {
-    try { bot.removeAllListeners(); bot.end(); } catch (e) {}
-    bot = null;
-  }
+  if (shuttingDown) return;
 
-  manualDisconnect = false;
-  settingsConfigured = false;
-  presenceReady = false;
-
-  console.log(`[mc] connecting to ${MC_HOST}:${MC_PORT} as ${MC_USERNAME} (v${MC_VERSION})`);
+  console.log(`[mc] connecting to ${MC_HOST}:${MC_PORT} as ${MC_USERNAME}`);
 
   bot = mineflayer.createBot({
     host: MC_HOST,
-    port: MC_PORT,
+    port: Number(MC_PORT) || 25565,
     username: MC_USERNAME,
     auth: 'microsoft',
     version: MC_VERSION,
@@ -86,250 +90,61 @@ function createMinecraftBot() {
   });
 
   bot.once('spawn', () => {
-    console.log('[mc] spawned as ' + bot.username);
-    sendDiscordMessage('✅ Minecraft bot connected as **' + bot.username + '**.');
-    settingsConfigured = false;
-
-    // Mark presence ready ~3s after spawn so the initial tab-list flood
-    // doesn't post a "joined" line for every existing player.
-    setTimeout(() => {
-      presenceReady = true;
-      const count = Object.keys(bot.players || {}).filter((n) => n !== bot.username).length;
-      sendDiscordMessage(`👥 Tracking **${count}** players online.`);
-    }, 3000);
-
-    // Open settings ~5s after spawn (only if not already configured)
-    setTimeout(() => {
-      if (!settingsConfigured && bot && bot.player) {
-        try { bot.chat('/settings'); } catch (e) {}
-      }
-    }, 5000);
+    console.log('[mc] spawned in world');
+    sendDiscordMessage('✅ Bot connected to DonutSMP');
+    reconnectDelay = 5000; // reset backoff
   });
 
-  // ---- Settings GUI auto-toggle (state aware) ----
-  bot.on('windowOpen', async (window) => {
-    if (settingsConfigured) return;
-    const title = window.title ? JSON.stringify(window.title).toLowerCase() : '';
-    if (!title.includes('settings')) return;
-
-    settingsConfigured = true;
-
-    try {
-      const slotsToDisable = [
-        { slot: 0,  name: 'public chat' },
-        { slot: 15, name: 'mob spawns' },
-      ];
-
-      const results = [];
-      for (const { slot, name } of slotsToDisable) {
-        const item = window.slots[slot];
-        const state = isEnabled(item);
-        console.log(`[settings] ${name} slot=${slot} state=${state} text=${getItemText(item)}`);
-
-        if (state === true) {
-          await bot.clickWindow(slot, 0, 0);
-          await new Promise((r) => setTimeout(r, 400));
-          results.push(`${name}: disabled`);
-        } else if (state === false) {
-          results.push(`${name}: already off`);
-        } else {
-          results.push(`${name}: unknown (skipped)`);
-        }
-      }
-
-      sendDiscordMessage('⚙️ ' + results.join(' | '));
-      setTimeout(() => { try { bot.closeWindow(window); } catch (e) {} }, 500);
-    } catch (e) {
-      console.error('[settings] toggle failed:', e);
-      sendDiscordMessage('⚠️ Settings toggle failed: ' + e.message);
-    }
+  bot.on('chat', (username, message) => {
+    if (username === bot.username) return;
+    sendDiscordMessage(`**${username}:** ${message}`);
   });
 
-  // ---- Chat relay + AFK teleport detection ----
-  bot.on('message', (jsonMsg) => {
-    let text = '';
-    try { text = jsonMsg.toString(); } catch (e) { return; }
-    if (!text || !text.trim()) return;
-
-    if (/you teleported to afk\s*#?\d+/i.test(text)) {
-      sendDiscordMessage('🚨 Teleport detected!');
-      setTimeout(() => {
-        try { bot.chat('/spawn 1'); } catch (e) {}
-      }, 1000);
-    }
-
-    sendDiscordMessage(text.slice(0, 1900));
-  });
-
-  // ---- Player presence (event-driven) ----
-  bot.on('playerJoined', (player) => {
-    if (!presenceReady) return;
-    if (!player || !player.username || player.username === bot.username) return;
-    sendDiscordMessage(`🟢 Joined: **${player.username}**`);
-  });
-
-  bot.on('playerLeft', (player) => {
-    if (!presenceReady) return;
-    if (!player || !player.username || player.username === bot.username) return;
-    sendDiscordMessage(`🔴 Left: **${player.username}**`);
+  bot.on('whisper', (username, message) => {
+    sendDiscordMessage(`📩 **${username} → you:** ${message}`);
   });
 
   bot.on('kicked', (reason) => {
     console.log('[mc] kicked:', reason);
-    sendDiscordMessage('❌ Kicked: ```' + String(reason).slice(0, 1800) + '```');
+    const r = typeof reason === 'string' ? reason : JSON.stringify(reason);
+    sendDiscordMessage(`⚠️ Kicked: \`${r.slice(0, 500)}\``);
   });
 
   bot.on('error', (err) => {
-    console.error('[mc] error:', err.message);
-    sendDiscordMessage('⚠️ MC error: ' + err.message);
+    console.log('[mc] error:', err.message);
   });
 
   bot.on('end', (reason) => {
     console.log('[mc] disconnected:', reason);
-    sendDiscordMessage('🔌 Bot disconnected (' + reason + ').');
-    presenceReady = false;
-    if (!manualDisconnect) {
-      console.log('[mc] auto-reconnecting in 15s...');
-      setTimeout(createMinecraftBot, 15_000);
-    }
+    if (shuttingDown) return;
+
+    sendDiscordMessage(
+      `🔌 Disconnected (${reason || 'unknown'}). Reconnecting in ${reconnectDelay / 1000}s...`
+    );
+    setTimeout(createMinecraftBot, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 300_000); // cap 5 min
   });
 }
 
-// ---------- DISCORD COMMANDS ----------
-discord.once('ready', () => {
-  console.log('[discord] logged in as ' + discord.user.tag);
-  discord.channels.fetch(DISCORD_CHANNEL).then((ch) => {
-    discordChannel = ch;
-    sendDiscordMessage('🤖 Bridge online. Use `' + PREFIX + 'connect` to start the MC bot.');
-  }).catch((e) => console.error('[discord] channel fetch failed:', e));
-});
+// ---------- Graceful shutdown ----------
+function shutdown(signal) {
+  console.log(`[sys] received ${signal}, shutting down`);
+  shuttingDown = true;
+  try {
+    bot?.quit?.('shutdown');
+  } catch {}
+  try {
+    discord.destroy();
+  } catch {}
+  setTimeout(() => process.exit(0), 1000);
+}
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('unhandledRejection', (err) => console.log('[sys] unhandledRejection:', err));
+process.on('uncaughtException', (err) => console.log('[sys] uncaughtException:', err));
 
-discord.on('messageCreate', async (msg) => {
-  if (msg.author.bot) return;
-  if (msg.channel.id !== DISCORD_CHANNEL) return;
-  if (!msg.content.startsWith(PREFIX)) return;
-
-  const args = msg.content.slice(PREFIX.length).trim().split(/\s+/);
-  const cmd  = (args.shift() || '').toLowerCase();
-
-  switch (cmd) {
-    case 'connect':
-      if (bot && bot.player) return msg.reply('Already connected.');
-      msg.reply('Connecting...');
-      createMinecraftBot();
-      break;
-
-    case 'disconnect':
-      if (!bot) return msg.reply('Not connected.');
-      manualDisconnect = true;
-      try { bot.end(); } catch (e) {}
-      msg.reply('Disconnected (auto-reconnect disabled).');
-      break;
-
-    case 'reauth':
-      msg.reply('Reconnecting fresh...');
-      manualDisconnect = true;
-      try { if (bot) bot.end(); } catch (e) {}
-      setTimeout(() => { manualDisconnect = false; createMinecraftBot(); }, 2000);
-      break;
-
-    case 'say':
-      if (!bot) return msg.reply('Bot not connected.');
-      try { bot.chat(args.join(' ')); } catch (e) { msg.reply('Failed: ' + e.message); }
-      break;
-
-    case 'tpa':
-      if (!bot) return msg.reply('Bot not connected.');
-      if (!args[0]) return msg.reply('Usage: `!tpa <player>`');
-      bot.chat('/tpa ' + args[0]);
-      break;
-
-    case 'tpahere':
-      if (!bot) return msg.reply('Bot not connected.');
-      if (!args[0]) return msg.reply('Usage: `!tpahere <player>`');
-      bot.chat('/tpahere ' + args[0]);
-      break;
-
-    case 'tpaccept':
-      if (!bot) return msg.reply('Bot not connected.');
-      bot.chat('/tpaccept');
-      break;
-
-    case 'tpdeny':
-      if (!bot) return msg.reply('Bot not connected.');
-      bot.chat('/tpdeny');
-      break;
-
-    case 'rtp':
-      if (!bot) return msg.reply('Bot not connected.');
-      bot.chat('/rtp');
-      break;
-
-    case 'spawn':
-      if (!bot) return msg.reply('Bot not connected.');
-      bot.chat('/spawn ' + (args[0] || ''));
-      break;
-
-    case 'afk':
-      if (!bot) return msg.reply('Bot not connected.');
-      bot.chat('/afk');
-      break;
-
-    case 'tell':
-    case 'msg':
-    case 'w': {
-      if (!bot) return msg.reply('Bot not connected.');
-      const target = args.shift();
-      const body   = args.join(' ');
-      if (!target || !body) return msg.reply('Usage: `!tell <player> <message>`');
-      bot.chat('/msg ' + target + ' ' + body);
-      break;
-    }
-
-    case 'nearby':
-    case 'online': {
-      if (!bot || !bot.players) return msg.reply('Bot not connected.');
-      const list = Object.keys(bot.players).filter((n) => n !== bot.username).sort();
-      if (!list.length) return msg.reply('No other players online.');
-      const chunks = [];
-      let buf = `**Online (${list.length}):**\n`;
-      for (const n of list) {
-        const line = `• ${n}\n`;
-        if (buf.length + line.length > 1900) { chunks.push(buf); buf = ''; }
-        buf += line;
-      }
-      if (buf) chunks.push(buf);
-      for (const c of chunks) await msg.reply(c);
-      break;
-    }
-
-    case 'status':
-      if (!bot || !bot.player) return msg.reply('Not connected.');
-      msg.reply(`Connected as **${bot.username}** | Health: ${bot.health?.toFixed(1)} | Food: ${bot.food} | Pos: ${bot.entity?.position?.floored?.()}`);
-      break;
-
-    case 'help':
-      msg.reply([
-        '**Commands:**',
-        '`!connect` / `!disconnect` / `!reauth`',
-        '`!status` / `!online`',
-        '`!say <text>` — public chat (blocked if chat off)',
-        '`!tell <player> <msg>` — private DM',
-        '`!tpa <player>` / `!tpahere <player>` / `!tpaccept` / `!tpdeny`',
-        '`!rtp` / `!spawn [n]` / `!afk`',
-      ].join('\n'));
-      break;
-
-    default:
-      msg.reply('Unknown command. Try `!help`.');
-  }
-});
-
-// ---------- BOOT ----------
-discord.login(DISCORD_TOKEN).catch((e) => {
-  console.error('[discord] login failed:', e);
+// ---------- Boot ----------
+discord.login(DISCORD_TOKEN).catch((err) => {
+  console.log('[discord] login failed:', err.message);
   process.exit(1);
 });
-
-process.on('unhandledRejection', (e) => console.error('[unhandled]', e));
-process.on('uncaughtException',  (e) => console.error('[uncaught]', e));

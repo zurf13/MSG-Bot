@@ -96,15 +96,64 @@ discord.on('messageCreate', async (msg) => {
         return;
       }
 
+      case 'rtp': {
+        if (!bot?.player) return msg.reply('❌ Not connected.');
+        const dim = args[0]?.toLowerCase();
+        const valid = ['east', 'end', 'nether'];
+        if (!dim || !valid.includes(dim)) {
+          return msg.reply('Usage: `!rtp <east|end|nether>`');
+        }
+        bot.chat(`/rtp ${dim}`);
+        return msg.react('✅');
+      }
+
+      case 'tpa': {
+        if (!bot?.player) return msg.reply('❌ Not connected.');
+        const target = args[0];
+        if (!target) return msg.reply('Usage: `!tpa <player>`');
+        bot.chat(`/tpa ${target}`);
+        return msg.reply(`📨 Sent /tpa to \`${target}\``);
+      }
+
+      case 'tpaccept': {
+        if (!bot?.player) return msg.reply('❌ Not connected.');
+        bot.chat('/tpaccept');
+        return msg.react('✅');
+      }
+
+      case 'tpdeny': {
+        if (!bot?.player) return msg.reply('❌ Not connected.');
+        bot.chat('/tpdeny');
+        return msg.react('✅');
+      }
+
+      case 'afk': {
+        if (!bot?.player) return msg.reply('❌ Not connected.');
+        bot.chat('/afk');
+        return msg.react('💤');
+      }
+
+      case 'spawn': {
+        if (!bot?.player) return msg.reply('❌ Not connected.');
+        bot.chat('/spawn');
+        return msg.react('✅');
+      }
+
       case 'help': {
         return msg.reply(
-          '**Commands:**\n' +
+          '**Bot Commands:**\n' +
           '`!status` — bot health/food/pos\n' +
           '`!players` — who\'s online\n' +
           '`!pos` — current coordinates\n' +
           '`!say <msg>` — send chat as bot\n' +
           '`!reconnect` — force reconnect\n' +
-          '`!help` — this list'
+          '\n**Server Commands:**\n' +
+          '`!rtp <east|end|nether>` — random teleport\n' +
+          '`!tpa <player>` — request teleport to player\n' +
+          '`!tpaccept` — accept incoming tpa\n' +
+          '`!tpdeny` — deny incoming tpa\n' +
+          '`!spawn` — go to spawn\n' +
+          '`!afk` — toggle AFK mode'
         );
       }
 
@@ -122,6 +171,16 @@ discord.on('messageCreate', async (msg) => {
     console.log('[mc] chat send failed:', err.message);
   }
 });
+
+function sendDiscordMessage(content) {
+  if (!discordChannel) {
+    console.log('[discord] no channel bound, skipping:', content?.slice(0, 80));
+    return;
+  }
+  discordChannel
+    .send(content)
+    .catch((err) => console.log('[discord] send failed:', err.message));
+}
 
 // ---------- Minecraft ----------
 function createMinecraftBot() {

@@ -1,7 +1,16 @@
 require('dotenv').config();
+const fs = require('fs');
 const mineflayer = require('mineflayer');
-const { Client, GatewayIntentBits, WebhookClient } = require('discord.js');
+const {
+  Client,
+  GatewayIntentBits,
+  WebhookClient,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+} = require('discord.js');
 
+// ---------- Config ----------
 const MC_HOST = process.env.MC_HOST || 'donutsmp.net';
 const MC_PORT = Number(process.env.MC_PORT) || 25565;
 const MC_VERSION = process.env.MC_VERSION || '1.21.11';
@@ -9,9 +18,10 @@ const MC_USERNAME = process.env.MC_USERNAME || 'DonutBot';
 const AUTH_CACHE = process.env.AUTH_CACHE || './auth-cache';
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
+const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
+const DISCORD_GUILD_ID = process.env.DISCORD_GUILD_ID; // optional, makes commands appear instantly in one server
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
-const COMMAND_PREFIX = process.env.COMMAND_PREFIX || '/';
 
 const hasDiscordBot = Boolean(DISCORD_TOKEN && DISCORD_CHANNEL_ID);
 const hasWebhook = Boolean(DISCORD_WEBHOOK_URL);
@@ -21,6 +31,7 @@ if (!hasDiscordBot && !hasWebhook) {
   process.exit(1);
 }
 
+// ---------- Discord setup ----------
 const discord = hasDiscordBot
   ? new Client({
       intents: [
@@ -33,8 +44,13 @@ const discord = hasDiscordBot
 
 let discordChannel = null;
 const webhookClient = hasWebhook ? new WebhookClient({ url: DISCORD_WEBHOOK_URL }) : null;
-let mcBot;
 
+// ---------- State ----------
+let mcBot = null;
+let shouldReconnect = true;
+let afkInterval = null;
+
+// ---------- Helpers ----------
 function sendDiscordMessage(content) {
   if (webhookClient) {
     return webhookClient.send({ content }).catch((err) => console.error('Webhook send failed:', err));
@@ -45,7 +61,17 @@ function sendDiscordMessage(content) {
   return Promise.resolve();
 }
 
+function stopAfk() {
+  if (afkInterval) {
+    clearInterval(afkInterval);
+    afkInterval = null;
+  }
+}
+
+// ---------- Minecraft bot ----------
 function createMinecraftBot() {
+  shouldReconnect = true;
+
   const options = {
     host: MC_HOST,
     port: MC_PORT,
@@ -60,62 +86,57 @@ function createMinecraftBot() {
     },
   };
 
-  mcBot = mineflayer.createBot(options);
+  const bot = mineflayer.createBot(options);
+  mcBot = bot;
 
-  mcBot.once('spawn', () => {
-    console.log(`Minecraft bot connected as ${mcBot.username}`);
-    sendDiscordMessage(`✅ Minecraft bot connected as **${mcBot.username}**.`);
+  bot.once('spawn', () => {
+    console.log(`✅ Minecraft bot connected as ${bot.username}`);
+    sendDiscordMessage(`✅ Minecraft bot connected as **${bot.username}**.`);
   });
 
-  mcBot.on('chat', (username, message) => {
-    if (username === mcBot.username) return;
+  bot.on('chat', (username, message) => {
+    if (username === bot.username) return;
     sendDiscordMessage(`**${username}**: ${message}`);
   });
 
-  mcBot.on('message', (jsonMsg) => {
+  bot.on('message', (jsonMsg) => {
     sendDiscordMessage(`MC: ${jsonMsg.toString()}`);
   });
 
-  mcBot.on('error', (err) => {
+  bot.on('error', (err) => {
     console.error('Minecraft error:', err);
     sendDiscordMessage(`⚠️ Minecraft error: ${err.message}`);
   });
 
   bot.on('kicked', (reason) => {
-  console.log('👢 Kicked:', JSON.stringify(reason, null, 2));
-});
-
-  mcBot.on('end', () => {
-    console.log('Minecraft bot disconnected. Reconnecting in 10s...');
-    sendDiscordMessage('🔄 Disconnected. Reconnecting in 10s...');
-    setTimeout(createMinecraftBot, 10000);
+    const text = typeof reason === 'string' ? reason : JSON.stringify(reason, null, 2);
+    console.log('👢 Kicked:', text);
+    sendDiscordMessage(`👢 Kicked: \`\`\`${text.slice(0, 1800)}\`\`\``);
   });
-}
 
-if (discord) {
-  discord.once('ready', async () => {
-    console.log(`Discord bot logged in as ${discord.user.tag}`);
-    try {
-      discordChannel = await discord.channels.fetch(DISCORD_CHANNEL_ID);
-    } catch (err) {
-      console.error('Failed to fetch Discord channel:', err);
+  bot.on('end', () => {
+    stopAfk();
+    mcBot = null;
+    if (shouldReconnect) {
+      console.log('🔄 Disconnected. Reconnecting in 10s...');
+      sendDiscordMessage('🔄 Disconnected. Reconnecting in 10s...');
+      setTimeout(createMinecraftBot, 10000);
+    } else {
+      console.log('Disconnected (manual).');
+      sendDiscordMessage('🛑 Disconnected.');
     }
   });
 
-  discord.on('messageCreate', (msg) => {
-    if (msg.author.bot) return;
-    if (msg.channelId !== DISCORD_CHANNEL_ID) return;
-    if (!msg.content.startsWith(COMMAND_PREFIX)) return;
-    if (!mcBot || !mcBot.player) {
-      msg.reply('Minecraft bot is not connected yet.').catch(() => {});
-      return;
-    }
-    const command = msg.content.slice(COMMAND_PREFIX.length);
-    mcBot.chat(`/${command}`);
-  });
-
-  discord.login(DISCORD_TOKEN);
+  return bot;
 }
 
-console.log('Starting Minecraft bot...');
-createMinecraftBot();
+// ---------- Slash commands ----------
+const slashCommands = [
+  new SlashCommandBuilder().setName('connect').setDescription('Connect the MC bot to the server'),
+  new SlashCommandBuilder().setName('disconnect').setDescription('Disconnect the MC bot'),
+  new SlashCommandBuilder().setName('reauth').setDescription('Clear auth cache and re-login with Microsoft'),
+  new SlashCommandBuilder()
+    .setName('tell')
+    .setDescription('Send a /msg to a player')
+    .addStringOption((o) => o.setName('player').setDescription('Player name').setRequired(true))
+    .addStringOption((o) => o.setName('

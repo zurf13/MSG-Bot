@@ -50,11 +50,71 @@ discord.once('clientReady', async () => {
   createMinecraftBot();
 });
 
-discord.on('messageCreate', (msg) => {
+discord.on('messageCreate', async (msg) => {
   if (msg.author.bot) return;
   if (msg.channelId !== DISCORD_CHANNEL) return;
-  if (!bot || !bot.player) return;
 
+  // ----- Commands (prefix: !) -----
+  if (msg.content.startsWith('!')) {
+    const [cmd, ...args] = msg.content.slice(1).trim().split(/\s+/);
+
+    switch (cmd.toLowerCase()) {
+      case 'status': {
+        if (!bot || !bot.player) {
+          return msg.reply('❌ Not connected to Minecraft.');
+        }
+        const health = bot.health?.toFixed(1) ?? '?';
+        const food = bot.food ?? '?';
+        const pos = bot.entity?.position;
+        const posStr = pos ? `${pos.x.toFixed(0)}, ${pos.y.toFixed(0)}, ${pos.z.toFixed(0)}` : '?';
+        return msg.reply(`✅ Connected\n❤️ Health: ${health}\n🍗 Food: ${food}\n📍 Pos: ${posStr}`);
+      }
+
+      case 'players': {
+        if (!bot?.players) return msg.reply('❌ Not connected.');
+        const names = Object.keys(bot.players);
+        return msg.reply(`👥 Online (${names.length}): ${names.join(', ') || 'none'}`);
+      }
+
+      case 'say': {
+        if (!bot?.player) return msg.reply('❌ Not connected.');
+        const text = args.join(' ');
+        if (!text) return msg.reply('Usage: `!say <message>`');
+        bot.chat(text);
+        return msg.react('✅');
+      }
+
+      case 'pos': {
+        const pos = bot?.entity?.position;
+        if (!pos) return msg.reply('❌ Not connected.');
+        return msg.reply(`📍 ${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)}`);
+      }
+
+      case 'reconnect': {
+        msg.reply('🔄 Forcing reconnect...');
+        try { bot?.quit?.('manual reconnect'); } catch {}
+        return;
+      }
+
+      case 'help': {
+        return msg.reply(
+          '**Commands:**\n' +
+          '`!status` — bot health/food/pos\n' +
+          '`!players` — who\'s online\n' +
+          '`!pos` — current coordinates\n' +
+          '`!say <msg>` — send chat as bot\n' +
+          '`!reconnect` — force reconnect\n' +
+          '`!help` — this list'
+        );
+      }
+
+      default:
+        return msg.reply(`Unknown command \`!${cmd}\`. Try \`!help\`.`);
+    }
+  }
+
+  // ----- Chat bridge (non-command messages) -----
+  if (!bot || !bot.player) return;
   const text = `[Discord] ${msg.author.username}: ${msg.content}`.slice(0, 256);
   try {
     bot.chat(text);
@@ -62,16 +122,6 @@ discord.on('messageCreate', (msg) => {
     console.log('[mc] chat send failed:', err.message);
   }
 });
-
-function sendDiscordMessage(content) {
-  if (!discordChannel) {
-    console.log('[discord] no channel bound, skipping:', content?.slice(0, 80));
-    return;
-  }
-  discordChannel
-    .send(content)
-    .catch((err) => console.log('[discord] send failed:', err.message));
-}
 
 // ---------- Minecraft ----------
 function createMinecraftBot() {

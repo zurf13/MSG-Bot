@@ -1,8 +1,3 @@
-Got it — clean. Every `/command` in Discord = forwarded to Minecraft. Nothing else. No bot controls.
-
-## Full `index.js`
-
-```js
 // index.js — Minecraft <-> Discord bridge for DonutSMP
 import 'dotenv/config';
 import mineflayer from 'mineflayer';
@@ -189,16 +184,3 @@ discord.login(DISCORD_TOKEN).catch((err) => {
   console.log('[discord] login failed:', err.message);
   process.exit(1);
 });
-```
-
-## How it works now
-
-| Discord input | What happens |
-|---|---|
-| `/spawn` | MC bot runs `/spawn` |
-| `/rtp east` | MC bot runs `/rtp east` |
-| `/tpa Silk` | MC bot runs `/tpa Silk` |
-| `/anything` | Forwarded to MC, server reply shown in Discord with `📜` |
-| `hello world` | Sent as MC chat: `[Discord] You: hello world` |
-
-That's it. No bot-side commands, no `//`, no `!`. Push and test with `/spawn`.

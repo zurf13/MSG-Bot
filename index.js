@@ -81,10 +81,9 @@ function createMinecraftBot() {
     sendDiscordMessage(`⚠️ Minecraft error: ${err.message}`);
   });
 
-  mcBot.on('kicked', (reason) => {
-    console.log('Kicked:', reason);
-    sendDiscordMessage(`👢 Kicked: ${reason}`);
-  });
+  bot.on('kicked', (reason) => {
+  console.log('👢 Kicked:', JSON.stringify(reason, null, 2));
+});
 
   mcBot.on('end', () => {
     console.log('Minecraft bot disconnected. Reconnecting in 10s...');

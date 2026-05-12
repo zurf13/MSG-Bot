@@ -1,3 +1,8 @@
+Got it — clean. Every `/command` in Discord = forwarded to Minecraft. Nothing else. No bot controls.
+
+## Full `index.js`
+
+```js
 // index.js — Minecraft <-> Discord bridge for DonutSMP
 import 'dotenv/config';
 import mineflayer from 'mineflayer';
@@ -20,8 +25,33 @@ if (!MC_USERNAME) throw new Error('Missing MC_USERNAME');
 // ---------- State ----------
 let bot = null;
 let discordChannel = null;
-let reconnectDelay = 5000; // ms, doubles on each fail, caps at 5min
+let reconnectDelay = 5000;
 let shuttingDown = false;
+
+// ---------- Helpers ----------
+function sendDiscordMessage(content) {
+  if (!discordChannel) {
+    console.log('[discord] no channel bound, skipping:', content?.slice(0, 80));
+    return;
+  }
+  discordChannel
+    .send(content)
+    .catch((err) => console.log('[discord] send failed:', err.message));
+}
+
+// Send a slash command to MC using the proper packet (works on 1.19+ signed-chat servers)
+function runMcCommand(command) {
+  if (!bot?.player) return false;
+  try {
+    const clean = command.replace(/^\//, '').trim();
+    if (!clean) return false;
+    bot._client.write('chat_command', { command: clean });
+    return true;
+  } catch (err) {
+    console.log('[mc] command send failed:', err.message);
+    return false;
+  }
+}
 
 // ---------- Discord ----------
 const discord = new Client({
@@ -46,7 +76,6 @@ discord.once('clientReady', async () => {
     console.log('[discord] failed to fetch channel:', err.message);
   }
 
-  // Start MC bot only after Discord is ready
   createMinecraftBot();
 });
 
@@ -54,133 +83,30 @@ discord.on('messageCreate', async (msg) => {
   if (msg.author.bot) return;
   if (msg.channelId !== DISCORD_CHANNEL) return;
 
-  // ----- Commands (prefix: !) -----
-  if (msg.content.startsWith('!')) {
-    const [cmd, ...args] = msg.content.slice(1).trim().split(/\s+/);
+  const content = msg.content.trim();
+  if (!content) return;
 
-    switch (cmd.toLowerCase()) {
-      case 'status': {
-        if (!bot || !bot.player) {
-          return msg.reply('❌ Not connected to Minecraft.');
-        }
-        const health = bot.health?.toFixed(1) ?? '?';
-        const food = bot.food ?? '?';
-        const pos = bot.entity?.position;
-        const posStr = pos ? `${pos.x.toFixed(0)}, ${pos.y.toFixed(0)}, ${pos.z.toFixed(0)}` : '?';
-        return msg.reply(`✅ Connected\n❤️ Health: ${health}\n🍗 Food: ${food}\n📍 Pos: ${posStr}`);
-      }
-
-      case 'players': {
-        if (!bot?.players) return msg.reply('❌ Not connected.');
-        const names = Object.keys(bot.players);
-        return msg.reply(`👥 Online (${names.length}): ${names.join(', ') || 'none'}`);
-      }
-
-      case 'say': {
-        if (!bot?.player) return msg.reply('❌ Not connected.');
-        const text = args.join(' ');
-        if (!text) return msg.reply('Usage: `!say <message>`');
-        bot.chat(text);
-        return msg.react('✅');
-      }
-
-      case 'pos': {
-        const pos = bot?.entity?.position;
-        if (!pos) return msg.reply('❌ Not connected.');
-        return msg.reply(`📍 ${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)}`);
-      }
-
-      case 'reconnect': {
-        msg.reply('🔄 Forcing reconnect...');
-        try { bot?.quit?.('manual reconnect'); } catch {}
-        return;
-      }
-
-      case 'rtp': {
-        if (!bot?.player) return msg.reply('❌ Not connected.');
-        const dim = args[0]?.toLowerCase();
-        const valid = ['east', 'end', 'nether'];
-        if (!dim || !valid.includes(dim)) {
-          return msg.reply('Usage: `!rtp <east|end|nether>`');
-        }
-        bot.chat(`/rtp ${dim}`);
-        return msg.react('✅');
-      }
-
-      case 'tpa': {
-        if (!bot?.player) return msg.reply('❌ Not connected.');
-        const target = args[0];
-        if (!target) return msg.reply('Usage: `!tpa <player>`');
-        bot.chat(`/tpa ${target}`);
-        return msg.reply(`📨 Sent /tpa to \`${target}\``);
-      }
-
-      case 'tpaccept': {
-        if (!bot?.player) return msg.reply('❌ Not connected.');
-        bot.chat('/tpaccept');
-        return msg.react('✅');
-      }
-
-      case 'tpdeny': {
-        if (!bot?.player) return msg.reply('❌ Not connected.');
-        bot.chat('/tpdeny');
-        return msg.react('✅');
-      }
-
-      case 'afk': {
-        if (!bot?.player) return msg.reply('❌ Not connected.');
-        bot.chat('/afk');
-        return msg.react('💤');
-      }
-
-      case 'spawn': {
-        if (!bot?.player) return msg.reply('❌ Not connected.');
-        bot.chat('/spawn');
-        return msg.react('✅');
-      }
-
-      case 'help': {
-        return msg.reply(
-          '**Bot Commands:**\n' +
-          '`!status` — bot health/food/pos\n' +
-          '`!players` — who\'s online\n' +
-          '`!pos` — current coordinates\n' +
-          '`!say <msg>` — send chat as bot\n' +
-          '`!reconnect` — force reconnect\n' +
-          '\n**Server Commands:**\n' +
-          '`!rtp <east|end|nether>` — random teleport\n' +
-          '`!tpa <player>` — request teleport to player\n' +
-          '`!tpaccept` — accept incoming tpa\n' +
-          '`!tpdeny` — deny incoming tpa\n' +
-          '`!spawn` — go to spawn\n' +
-          '`!afk` — toggle AFK mode'
-        );
-      }
-
-      default:
-        return msg.reply(`Unknown command \`!${cmd}\`. Try \`!help\`.`);
+  // ----- Slash command → forward to Minecraft -----
+  if (content.startsWith('/')) {
+    if (!bot?.player) return msg.reply('❌ Not connected to Minecraft.');
+    const ok = runMcCommand(content);
+    if (ok) {
+      await msg.react('✅').catch(() => {});
+    } else {
+      msg.reply('❌ Failed to send command.');
     }
+    return;
   }
 
-  // ----- Chat bridge (non-command messages) -----
-  if (!bot || !bot.player) return;
-  const text = `[Discord] ${msg.author.username}: ${msg.content}`.slice(0, 256);
+  // ----- Everything else → MC chat -----
+  if (!bot?.player) return;
+  const text = `[Discord] ${msg.author.username}: ${content}`.slice(0, 256);
   try {
     bot.chat(text);
   } catch (err) {
     console.log('[mc] chat send failed:', err.message);
   }
 });
-
-function sendDiscordMessage(content) {
-  if (!discordChannel) {
-    console.log('[discord] no channel bound, skipping:', content?.slice(0, 80));
-    return;
-  }
-  discordChannel
-    .send(content)
-    .catch((err) => console.log('[discord] send failed:', err.message));
-}
 
 // ---------- Minecraft ----------
 function createMinecraftBot() {
@@ -201,7 +127,7 @@ function createMinecraftBot() {
   bot.once('spawn', () => {
     console.log('[mc] spawned in world');
     sendDiscordMessage('✅ Bot connected to DonutSMP');
-    reconnectDelay = 5000; // reset backoff
+    reconnectDelay = 5000;
   });
 
   bot.on('chat', (username, message) => {
@@ -211,6 +137,16 @@ function createMinecraftBot() {
 
   bot.on('whisper', (username, message) => {
     sendDiscordMessage(`📩 **${username} → you:** ${message}`);
+  });
+
+  // Server system messages (replies to /spawn, /rtp, etc.)
+  bot.on('messagestr', (message, position) => {
+    if (position === 'system' || position === undefined) {
+      const trimmed = message?.trim();
+      if (trimmed && trimmed.length > 0 && trimmed.length < 500) {
+        sendDiscordMessage(`📜 ${trimmed}`);
+      }
+    }
   });
 
   bot.on('kicked', (reason) => {
@@ -231,7 +167,7 @@ function createMinecraftBot() {
       `🔌 Disconnected (${reason || 'unknown'}). Reconnecting in ${reconnectDelay / 1000}s...`
     );
     setTimeout(createMinecraftBot, reconnectDelay);
-    reconnectDelay = Math.min(reconnectDelay * 2, 300_000); // cap 5 min
+    reconnectDelay = Math.min(reconnectDelay * 2, 300_000);
   });
 }
 
@@ -239,12 +175,8 @@ function createMinecraftBot() {
 function shutdown(signal) {
   console.log(`[sys] received ${signal}, shutting down`);
   shuttingDown = true;
-  try {
-    bot?.quit?.('shutdown');
-  } catch {}
-  try {
-    discord.destroy();
-  } catch {}
+  try { bot?.quit?.('shutdown'); } catch {}
+  try { discord.destroy(); } catch {}
   setTimeout(() => process.exit(0), 1000);
 }
 process.on('SIGINT', () => shutdown('SIGINT'));
@@ -257,3 +189,16 @@ discord.login(DISCORD_TOKEN).catch((err) => {
   console.log('[discord] login failed:', err.message);
   process.exit(1);
 });
+```
+
+## How it works now
+
+| Discord input | What happens |
+|---|---|
+| `/spawn` | MC bot runs `/spawn` |
+| `/rtp east` | MC bot runs `/rtp east` |
+| `/tpa Silk` | MC bot runs `/tpa Silk` |
+| `/anything` | Forwarded to MC, server reply shown in Discord with `📜` |
+| `hello world` | Sent as MC chat: `[Discord] You: hello world` |
+
+That's it. No bot-side commands, no `//`, no `!`. Push and test with `/spawn`.

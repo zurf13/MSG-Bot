@@ -10,7 +10,7 @@ const {
   MC_HOST = 'donutsmp.net',
   MC_PORT = '25565',
   MC_USERNAME,
-  MC_VERSION = '1.21.4',
+  MC_VERSION = '1.21.11',
 } = process.env;
 
 if (!DISCORD_TOKEN) throw new Error('Missing DISCORD_TOKEN');
@@ -34,13 +34,13 @@ function sendDiscordMessage(content) {
     .catch((err) => console.log('[discord] send failed:', err.message));
 }
 
-// Send a slash command to MC using the proper packet (works on 1.19+ signed-chat servers)
+// Send a slash command to MC — let mineflayer pick the right packet
 function runMcCommand(command) {
   if (!bot?.player) return false;
   try {
     const clean = command.replace(/^\//, '').trim();
     if (!clean) return false;
-    bot._client.write('chat_command', { command: clean });
+    bot.chat('/' + clean);
     return true;
   } catch (err) {
     console.log('[mc] command send failed:', err.message);
@@ -107,15 +107,15 @@ discord.on('messageCreate', async (msg) => {
 function createMinecraftBot() {
   if (shuttingDown) return;
 
-  console.log(`[mc] connecting to ${MC_HOST}:${MC_PORT} as ${MC_USERNAME}`);
+  console.log(`[mc] connecting to ${MC_HOST}:${MC_PORT} (auto-version)`);
 
   bot = mineflayer.createBot({
     host: MC_HOST,
     port: Number(MC_PORT) || 25565,
     username: MC_USERNAME,
     auth: 'microsoft',
-    version: MC_VERSION,
-    disableChatSigning: true,
+    version: false,
+    disableChatSigning: false,
     checkTimeoutInterval: 60_000,
   });
 

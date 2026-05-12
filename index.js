@@ -180,3 +180,111 @@ async function registerSlashCommands() {
     }
   } catch (err) {
     console.error('Slash register failed:', err);
+  }
+}
+
+if (discord) {
+  discord.once('ready', async () => {
+    console.log('Discord logged in as ' + discord.user.tag);
+    try {
+      discordChannel = await discord.channels.fetch(DISCORD_CHANNEL_ID);
+    } catch (err) {
+      console.error('Channel fetch failed:', err);
+    }
+    await registerSlashCommands();
+  });
+
+  discord.on('interactionCreate', async (i) => {
+    if (!i.isChatInputCommand()) return;
+    const cmd = i.commandName;
+
+    try {
+      if (cmd === 'connect') {
+        if (mcBot) return i.reply({ content: 'Already connected.', ephemeral: true });
+        await i.reply('Connecting...');
+        createMinecraftBot();
+      } else if (cmd === 'disconnect') {
+        if (!mcBot) return i.reply({ content: 'Not connected.', ephemeral: true });
+        shouldReconnect = false;
+        stopAfk();
+        mcBot.quit();
+        mcBot = null;
+        await i.reply('Disconnected.');
+      } else if (cmd === 'reauth') {
+        shouldReconnect = false;
+        stopAfk();
+        if (mcBot) { mcBot.quit(); mcBot = null; }
+        try { fs.rmSync(AUTH_CACHE, { recursive: true, force: true }); } catch (e) { console.error(e); }
+        await i.reply('Auth cache cleared. Reconnecting...');
+        setTimeout(createMinecraftBot, 1000);
+      } else if (cmd === 'tell') {
+        if (!mcBot || !mcBot.player) return i.reply({ content: 'Bot offline.', ephemeral: true });
+        const player = i.options.getString('player');
+        const message = i.options.getString('message');
+        mcBot.chat('/msg ' + player + ' ' + message);
+        await i.reply('Sent to `' + player + '`: ' + message);
+      } else if (cmd === 'afk') {
+        if (!mcBot || !mcBot.player) return i.reply({ content: 'Bot offline.', ephemeral: true });
+        if (afkInterval) {
+          stopAfk();
+          await i.reply('AFK off.');
+        } else {
+          afkInterval = setInterval(() => {
+            try {
+              mcBot.setControlState('jump', true);
+              setTimeout(() => { if (mcBot) mcBot.setControlState('jump', false); }, 200);
+            } catch (e) {}
+          }, 30000);
+          await i.reply('AFK on.');
+        }
+      } else if (cmd === 'rtp') {
+        if (!mcBot || !mcBot.player) return i.reply({ content: 'Bot offline.', ephemeral: true });
+        const world = i.options.getString('world');
+        mcBot.chat('/rtp ' + world);
+        await i.reply('Ran /rtp ' + world);
+      } else if (cmd === 'tpa') {
+        if (!mcBot || !mcBot.player) return i.reply({ content: 'Bot offline.', ephemeral: true });
+        const player = i.options.getString('player');
+        mcBot.chat('/tpa ' + player);
+        await i.reply('Sent /tpa to `' + player + '`');
+      } else if (cmd === 'tpahere') {
+        if (!mcBot || !mcBot.player) return i.reply({ content: 'Bot offline.', ephemeral: true });
+        const player = i.options.getString('player');
+        mcBot.chat('/tpahere ' + player);
+        await i.reply('Sent /tpahere to `' + player + '`');
+      } else if (cmd === 'tpaccept') {
+        if (!mcBot || !mcBot.player) return i.reply({ content: 'Bot offline.', ephemeral: true });
+        const player = i.options.getString('player');
+        if (player) {
+          mcBot.chat('/tpaccept ' + player);
+          await i.reply('Accepted tpa from `' + player + '`');
+        } else {
+          mcBot.chat('/tpaccept');
+          await i.reply('Ran /tpaccept');
+        }
+      }
+    } catch (err) {
+      console.error('Interaction error:', err);
+      if (!i.replied) i.reply({ content: 'Error: ' + err.message, ephemeral: true }).catch(() => {});
+    }
+  });
+
+  discord.on('messageCreate', (msg) => {
+    if (msg.author.bot) return;
+    if (msg.channelId !== DISCORD_CHANNEL_ID) return;
+    if (msg.content.startsWith('/')) return;
+    if (!mcBot || !mcBot.player) return;
+    mcBot.chat('[' + msg.author.username + '] ' + msg.content);
+  });
+
+  discord.login(DISCORD_TOKEN);
+}
+
+console.log('Starting Minecraft bot...');
+createMinecraftBot();
+
+process.on('SIGINT', () => {
+  shouldReconnect = false;
+  if (mcBot) mcBot.quit();
+  process.exit(0);
+});

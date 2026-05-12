@@ -1,4 +1,3 @@
-```javascript
 require('dotenv').config();
 const mineflayer = require('mineflayer');
 const { Client, GatewayIntentBits, WebhookClient } = require('discord.js');
@@ -121,14 +120,3 @@ if (discord) {
 
 console.log('Starting Minecraft bot...');
 createMinecraftBot();
-```
-
-## Quick deploy checklist
-
-1. Replace your `index.js` with the above.
-2. On Railway → **Variables**: remove `MC_EMAIL` / `MC_PASSWORD`. Keep `DISCORD_TOKEN`, `DISCORD_CHANNEL_ID`, `DISCORD_WEBHOOK_URL`.
-3. On Railway → **Volumes**: add a volume mounted at `/app/auth-cache`.
-4. **Rotate** the leaked Discord token, webhook, and Microsoft password.
-5. Deploy → check logs (or Discord) for the login code → visit `microsoft.com/link` → enter code → done.
-
-Token caches in the volume so future restarts skip the login step.
